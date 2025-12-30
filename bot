@@ -1,0 +1,201 @@
+const { 
+    Client, 
+    GatewayIntentBits, 
+    Routes, 
+    REST, 
+    SlashCommandBuilder, 
+    EmbedBuilder 
+} = require('discord.js');
+const { QuickDB } = require("quick.db");
+
+// Khởi tạo Database và Bot
+const db = new QuickDB();
+const TOKEN = 'MTQxMTI2NjAzMDk0ODQ1MDM2Nw.GrD97d.Bz8rswOLlwoLsjKqIxOOnnuULr-DQcJHZ_-yDw';
+const CLIENT_ID = '1411266030948450367';
+
+const client = new Client({ intents: [GatewayIntentBits.Guilds] });
+
+// --- 1. Đăng ký các lệnh Slash ---
+const commands = [
+    new SlashCommandBuilder().setName('menu').setDescription('📜 Xem danh sách tất cả các lệnh của Bot'),
+    new SlashCommandBuilder().setName('diemdanh').setDescription('🎁 Nhận 100 coin miễn phí mỗi ngày'),
+    new SlashCommandBuilder().setName('balance').setDescription('💰 Xem số dư tài khoản'),
+    new SlashCommandBuilder()
+        .setName('cuoc')
+        .setDescription('🎰 Cược đỏ đen (50/50)')
+        .addIntegerOption(opt => opt.setName('so').setDescription('Số coin muốn cược').setRequired(true)),
+    new SlashCommandBuilder()
+        .setName('cuocvip')
+        .setDescription('🔥 Cược siêu cấp (0.1% thắng - X1000 tài sản)')
+        .addIntegerOption(opt => opt.setName('so').setDescription('Số coin muốn cược').setRequired(true)),
+    new SlashCommandBuilder()
+        .setName('taisiu')
+        .setDescription('🎲 Chơi Tài Xỉu (3 xúc xắc)')
+        .addStringOption(opt => opt.setName('chon').setDescription('Chọn Tài hoặc Xỉu').setRequired(true)
+            .addChoices({ name: 'Tài (11-18)', value: 'tai' }, { name: 'Xỉu (3-10)', value: 'xiu' }))
+        .addIntegerOption(opt => opt.setName('tien').setDescription('Số tiền cược').setRequired(true)),
+    new SlashCommandBuilder()
+        .setName('give')
+        .setDescription('💸 Chuyển coin cho người khác')
+        .addUserOption(opt => opt.setName('nguoi_nhan').setDescription('Người nhận').setRequired(true))
+        .addIntegerOption(opt => opt.setName('so_luong').setDescription('Số lượng coin').setRequired(true)),
+    new SlashCommandBuilder().setName('top').setDescription('🏆 Xem bảng xếp hạng đại gia'),
+].map(command => command.toJSON());
+
+const rest = new REST({ version: '10' }).setToken(TOKEN);
+
+(async () => {
+    try {
+        console.log('--- Đang cập nhật lệnh Slash ---');
+        await rest.put(Routes.applicationCommands(CLIENT_ID), { body: commands });
+        console.log('--- Đã cập nhật xong toàn bộ lệnh! ---');
+    } catch (error) {
+        console.error(error);
+    }
+})();
+
+// --- 2. Xử lý sự kiện khi dùng lệnh ---
+client.on('interactionCreate', async interaction => {
+    if (!interaction.isChatInputCommand()) return;
+
+    const { commandName, user, options } = interaction;
+    const userId = user.id;
+    const getBal = async (id) => (await db.get(`${id}.coins`)) || 0;
+
+    // --- Lệnh MENU ---
+    if (commandName === 'menu') {
+        const embed = new EmbedBuilder()
+            .setTitle('📜 DANH SÁCH LỆNH BOT GAME')
+            .setColor('#00ffcc')
+            .setThumbnail(client.user.displayAvatarURL())
+            .addFields(
+                { name: '🎮 Trò chơi', value: '`/cuoc`: Đỏ đen 50/50\n`/cuocvip`: Tỉ lệ 0.1% ăn x1000\n`/taisiu`: Lắc xúc xắc Tài/Xỉu' },
+                { name: '💰 Kinh tế', value: '`/diemdanh`: Nhận 100 coin\n`/balance`: Kiểm tra ví\n`/give`: Chuyển tiền\n`/top`: Bảng xếp hạng' }
+            )
+            .setFooter({ text: 'Chúc bạn chơi game vui vẻ!' });
+        return interaction.reply({ embeds: [embed] });
+    }
+
+    // --- Lệnh Điểm Danh ---
+    if (commandName === 'diemdanh') {
+        const cooldown = await db.get(`${userId}.lastDiemDanh`);
+        const now = Date.now();
+        if (cooldown && now - cooldown < 86400000) {
+            const timeLeft = Math.ceil((86400000 - (now - cooldown)) / 3600000);
+            return interaction.reply({ content: `⏳ Bạn đã điểm danh rồi! Hãy quay lại sau **${timeLeft} giờ**.`, ephemeral: true });
+        }
+        await db.add(`${userId}.coins`, 100);
+        await db.set(`${userId}.lastDiemDanh`, now);
+        
+        const embed = new EmbedBuilder()
+            .setTitle('🎁 ĐIỂM DANH THÀNH CÔNG')
+            .setDescription(`Chúc mừng **${user.username}**, bạn đã nhận được **100 coin**!`)
+            .setColor('#2ecc71');
+        return interaction.reply({ embeds: [embed] });
+    }
+
+    // --- Lệnh Xem Tiền ---
+    if (commandName === 'balance') {
+        const bal = await getBal(userId);
+        const embed = new EmbedBuilder()
+            .setTitle('💰 TÀI KHOẢN')
+            .setDescription(`Số dư của **${user.username}**: **${bal.toLocaleString()} coin**`)
+            .setColor('#3498db');
+        return interaction.reply({ embeds: [embed] });
+    }
+
+    // --- Lệnh Cược Đỏ Đen ---
+    if (commandName === 'cuoc') {
+        const bet = options.getInteger('so');
+        const bal = await getBal(userId);
+        if (bet <= 0 || bal < bet) return interaction.reply({ content: '❌ Bạn không đủ coin!', ephemeral: true });
+
+        const win = Math.random() > 0.5;
+        if (win) {
+            await db.add(`${userId}.coins`, bet);
+            return interaction.reply({ embeds: [new EmbedBuilder().setColor('#f1c40f').setTitle('🎰 THẮNG!').setDescription(`Bạn nhận thêm **+${bet.toLocaleString()} coin**`)] });
+        } else {
+            await db.sub(`${userId}.coins`, bet);
+            return interaction.reply({ embeds: [new EmbedBuilder().setColor('#e74c3c').setTitle('💀 THUA!').setDescription(`Bạn mất **-${bet.toLocaleString()} coin**`)] });
+        }
+    }
+
+    // --- Lệnh CƯỢC VIP (0.1% thắng, x1000) ---
+    if (commandName === 'cuocvip') {
+        const bet = options.getInteger('so');
+        const bal = await getBal(userId);
+        if (bet <= 0 || bal < bet) return interaction.reply({ content: '❌ Bạn không đủ coin!', ephemeral: true });
+
+        // Tỷ lệ 0.1% (1/1000)
+        const win = Math.random() < 0.001;
+        const embed = new EmbedBuilder().setTitle('🔥 KẾT QUẢ CƯỢC VIP');
+
+        if (win) {
+            const prize = bet * 1000;
+            await db.add(`${userId}.coins`, prize);
+            embed.setColor('#ff00ff').setDescription(`🌟 **TRỜI ƠI! BẠN ĐÃ TRÚNG GIẢI ĐẶC BIỆT!**\nBạn nhận được: **+${prize.toLocaleString()} coin** (X1000)`);
+        } else {
+            await db.sub(`${userId}.coins`, bet);
+            embed.setColor('#333333').setDescription(`💸 Tỉ lệ 0.1% quá khó! Bạn đã mất **${bet.toLocaleString()} coin**.`);
+        }
+        return interaction.reply({ embeds: [embed] });
+    }
+
+    // --- Lệnh Tài Xỉu ---
+    if (commandName === 'taisiu') {
+        const choice = options.getString('chon');
+        const bet = options.getInteger('tien');
+        const bal = await getBal(userId);
+        if (bet <= 0 || bal < bet) return interaction.reply({ content: '❌ Lỗi tiền cược!', ephemeral: true });
+
+        const d1 = Math.floor(Math.random() * 6) + 1;
+        const d2 = Math.floor(Math.random() * 6) + 1;
+        const d3 = Math.floor(Math.random() * 6) + 1;
+        const total = d1 + d2 + d3;
+        const result = total >= 11 ? 'tai' : 'xiu';
+
+        const embed = new EmbedBuilder()
+            .setTitle('🎲 KẾT QUẢ TÀI XỈU')
+            .setDescription(`🎲 **${d1} - ${d2} - ${d3}** | Tổng: **${total}** (${total >= 11 ? 'TÀI' : 'XỈU'})`);
+
+        if (choice === result) {
+            await db.add(`${userId}.coins`, bet);
+            embed.setColor('#2ecc71').addFields({ name: 'Kết quả', value: `✅ Bạn thắng **${bet.toLocaleString()} coin**` });
+        } else {
+            await db.sub(`${userId}.coins`, bet);
+            embed.setColor('#e74c3c').addFields({ name: 'Kết quả', value: `❌ Bạn thua **${bet.toLocaleString()} coin**` });
+        }
+        return interaction.reply({ embeds: [embed] });
+    }
+
+    // --- Lệnh Chuyển Tiền ---
+    if (commandName === 'give') {
+        const receiver = options.getUser('nguoi_nhan');
+        const amount = options.getInteger('so_luong');
+        const bal = await getBal(userId);
+        if (receiver.id === userId || receiver.bot || amount <= 0 || bal < amount) return interaction.reply('❌ Lỗi giao dịch!');
+
+        await db.sub(`${userId}.coins`, amount);
+        await db.add(`${receiver.id}.coins`, amount);
+        return interaction.reply({ embeds: [new EmbedBuilder().setColor('#9b59b6').setDescription(`💸 **${user.username}** đã gửi **${amount.toLocaleString()} coin** cho **${receiver.username}**!`)] });
+    }
+
+    // --- Lệnh Top Đại Gia ---
+    if (commandName === 'top') {
+        const all = await db.all();
+        const top = all
+            .filter(i => i.id.endsWith('.coins'))
+            .map(i => ({ id: i.id.split('.')[0], bal: i.value }))
+            .sort((a, b) => b.bal - a.bal).slice(0, 10);
+
+        let str = "";
+        for (let i = 0; i < top.length; i++) {
+            const u = await client.users.fetch(top[i].id).catch(() => ({ username: "Ẩn danh" }));
+            str += `**#${i + 1}.** ${u.username} — \`${top[i].bal.toLocaleString()} 💰\`\n`;
+        }
+        return interaction.reply({ embeds: [new EmbedBuilder().setTitle('🏆 TOP ĐẠI GIA').setColor('#f1c40f').setDescription(str || "Chưa có dữ liệu.")] });
+    }
+});
+
+process.on('unhandledRejection', error => console.error('Lỗi hệ thống:', error));
+client.login(TOKEN);
